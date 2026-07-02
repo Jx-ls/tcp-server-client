@@ -1,13 +1,14 @@
-#include "utils.h"
+#include "../include/utils.h"
 
-int main (int argc, char **argv) {
-    if (argc != 3)
-        cerr << "Usage: client <IP_ADRESS> <PORT>\n", exit(EXIT_FAILURE);
-    
+int main (int argc, char **argv) 
+{
     int                 sockfd, n;
     struct sockaddr_in  servaddr{};
     char                recvline[MAXLINE + 1];
 
+    if (argc != 3)
+        cerr << "Usage: client <IP_ADRESS> <PORT>\n", exit(EXIT_FAILURE);
+    
     sockfd = Socket(AF_INET, SOCK_STREAM, 0);
 
     servaddr.sin_family = AF_INET;
