@@ -10,6 +10,7 @@
 #include <iostream>
 #include <sys/errno.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <time.h>
 #define MAXLINE     4096
 #define BUFFSIZE    8096
@@ -31,3 +32,5 @@ ssize_t Read(int fd, void *buf, size_t nbytes);
 void Write(int fd, const void *buf, size_t n);
 
 void Close(int fd);
+
+void SetNonBlocking(int fd);

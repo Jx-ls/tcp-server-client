@@ -11,6 +11,7 @@ int main (int argc, char **argv)
         cerr << "Usage: server <PORT>\n", exit(0);
 
     listenfd = Socket(AF_INET, SOCK_STREAM, 0);
+    SetNonBlocking(listenfd);
 
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -22,6 +23,7 @@ int main (int argc, char **argv)
 
     for ( ; ; ) {
         connfd = Accept(listenfd, (struct sockaddr *) NULL, NULL);
+        SetNonBlocking(connfd);
         cout << "Connected\n";
 
         ticks = time(NULL);

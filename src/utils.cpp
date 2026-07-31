@@ -50,3 +50,15 @@ void Close(int fd) {
     if ( (n = close(fd)) < 0)
         cerr << "Close Error: " << strerror(errno) << "\n", exit(EXIT_FAILURE);
 }
+
+void SetNonBlocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        cerr << "fcntl F_GETFL Error\n";
+        exit(EXIT_FAILURE);
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        cerr << "fcntl F_SETFL Error\n";
+        exit(EXIT_FAILURE);
+    }
+}
