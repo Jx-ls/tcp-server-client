@@ -1,4 +1,6 @@
 #include "../include/utils.h"
+#include <sys/socket.h>
+#include <unistd.h>
 
 int Socket(int domain, int type, int protocol) {
     int n;
@@ -20,9 +22,7 @@ void Listen(int fd, int n) {
 }
 
 int Accept(int fd, struct sockaddr *__restrict addr, socklen_t *__restrict addr_len) {
-    int n;
-    if ( (n = accept(fd, addr, addr_len)) < 0)
-        cerr << "Accepting Error: " << strerror(errno) << "\n", exit(EXIT_FAILURE);
+    int n = accept(fd, addr, addr_len);
     return n;
 }
 
@@ -33,10 +33,7 @@ void Connect(int fd, const struct sockaddr *addr, socklen_t len) {
 }
 
 ssize_t Read(int fd, void *buf, size_t nbytes) {
-    ssize_t n;
-    if ( (n = read(fd, buf, nbytes)) < 0)
-        cerr << "Read Error: " << strerror(errno) << "\n", exit(EXIT_FAILURE);
-    return n;
+    return read(fd, buf, nbytes);
 }
 
 void Write(int fd, const void *buf, size_t n) {

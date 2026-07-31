@@ -12,9 +12,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <sys/epoll.h>
 #define MAXLINE     4096
 #define BUFFSIZE    8096
 #define MAX_CONN    5
+#define MAX_EVENTS  100
 using namespace std;
 
 int Socket(int domain, int type, int protocol);
