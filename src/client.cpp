@@ -3,8 +3,20 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <iomanip>
+#include <sstream>
 
 std::atomic<bool> running{true};
+
+std::string get_client_timestamp() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    std::tm* local_time = std::localtime(&now_c);
+    
+    std::ostringstream oss;
+    oss << std::put_time(local_time, "%H:%M:%S");
+    return oss.str();
+}
 
 void send_packet(int sockfd, uint16_t msg_type, const std::string& payload) {
     MessageHeader hdr;
@@ -38,7 +50,6 @@ void receive_loop(int sockfd) {
                     );
                     buffer.erase(buffer.begin(), buffer.begin() + sizeof(MessageHeader) + hdr.payload_length);
 
-                    // Clear current line, print incoming broadcast/response cleanly, and restore prompt
                     cout << "\r\33[2K" << payload << "\n> " << flush;
                 } else {
                     break;
@@ -84,7 +95,6 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        // Clear the user's typed line instantly to let the server's broadcast take over cleanly
         cout << "\33[A\33[2K\r" << flush;
 
         if (msg == "/ping") {

@@ -2,6 +2,8 @@
 #include "../include/server_core.h"
 #include <unordered_map>
 #include <atomic>
+#include <iomanip>
+#include <sstream>
 
 ThreadPool pool(4);
 std::unordered_map<int, std::shared_ptr<Connection>> connections;
@@ -10,6 +12,16 @@ int epollfd;
 
 std::atomic<long> total_requests_processed{0};
 auto server_start_time = std::chrono::steady_clock::now();
+
+std::string get_current_timestamp() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    std::tm* local_time = std::localtime(&now_c);
+    
+    std::ostringstream oss;
+    oss << std::put_time(local_time, "%H:%M:%S");
+    return oss.str();
+}
 
 void modify_epoll_events(int fd, uint32_t events) {
     struct epoll_event ev{};
@@ -37,10 +49,10 @@ void send_packet_to_client(std::shared_ptr<Connection> conn, uint16_t msg_type, 
 void process_message(std::shared_ptr<Connection> conn, uint16_t msg_type, std::vector<uint8_t> payload) {
     total_requests_processed++;
     std::string payload_str(payload.begin(), payload.end());
+    std::string timestamp = get_current_timestamp();
 
     if (msg_type == MSG_CHAT) {
-        // Broadcast to ALL connected clients
-        std::string broadcast_msg = "[Client " + std::to_string(conn->fd) + "]: " + payload_str;
+        std::string broadcast_msg = "[" + timestamp + "] [Client " + std::to_string(conn->fd) + "]: " + payload_str;
         cout << broadcast_msg << "\n";
 
         std::lock_guard<std::mutex> lock(connections_mtx);
@@ -52,7 +64,7 @@ void process_message(std::shared_ptr<Connection> conn, uint16_t msg_type, std::v
         auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - server_start_time).count();
         
-        std::string stats = "=== Server Metrics ===\n"
+        std::string stats = "[" + timestamp + "] === Server Metrics ===\n"
                             "Uptime: " + std::to_string(uptime) + "s\n"
                             "Active Clients: " + std::to_string(connections.size()) + "\n"
                             "Total Requests: " + std::to_string(total_requests_processed) + "\n"
@@ -61,7 +73,7 @@ void process_message(std::shared_ptr<Connection> conn, uint16_t msg_type, std::v
         send_packet_to_client(conn, MSG_STATS, stats);
     } 
     else if (msg_type == MSG_PING) {
-        send_packet_to_client(conn, MSG_PING, "PONG");
+        send_packet_to_client(conn, MSG_PING, "[" + timestamp + "] PONG");
     }
 }
 
