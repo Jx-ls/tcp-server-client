@@ -1,10 +1,15 @@
 #include "../include/utils.h"
 #include "../include/server_core.h"
 #include <unordered_map>
+#include <atomic>
 
-ThreadPool pool(4); // 4 worker threads
+ThreadPool pool(4);
 std::unordered_map<int, std::shared_ptr<Connection>> connections;
+std::mutex connections_mtx;
 int epollfd;
+
+std::atomic<long> total_requests_processed{0};
+auto server_start_time = std::chrono::steady_clock::now();
 
 void modify_epoll_events(int fd, uint32_t events) {
     struct epoll_event ev{};
@@ -13,27 +18,51 @@ void modify_epoll_events(int fd, uint32_t events) {
     epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &ev);
 }
 
-void process_message(std::shared_ptr<Connection> conn, std::vector<uint8_t> payload) {
-    // Simulated business logic
-    std::string response_str = "Processed: " + std::string(payload.begin(), payload.end());
-    
-    // Construct outgoing frame
-    MessageHeader out_hdr;
-    out_hdr.payload_length = response_str.size();
-    out_hdr.msg_type = 2; // Response
+void send_packet_to_client(std::shared_ptr<Connection> conn, uint16_t msg_type, const std::string& data) {
+    MessageHeader hdr;
+    hdr.payload_length = data.size();
+    hdr.msg_type = msg_type;
 
-    std::vector<uint8_t> out_data(sizeof(MessageHeader) + out_hdr.payload_length);
-    memcpy(out_data.data(), &out_hdr, sizeof(MessageHeader));
-    memcpy(out_data.data() + sizeof(MessageHeader), response_str.c_str(), out_hdr.payload_length);
+    std::vector<uint8_t> out_data(sizeof(MessageHeader) + hdr.payload_length);
+    memcpy(out_data.data(), &hdr, sizeof(MessageHeader));
+    memcpy(out_data.data() + sizeof(MessageHeader), data.c_str(), hdr.payload_length);
 
-    // Lock and append to write buffer
     {
         std::lock_guard<std::mutex> lock(conn->write_mtx);
         conn->write_buf.insert(conn->write_buf.end(), out_data.begin(), out_data.end());
     }
-    
-    // Arm EPOLLOUT to notify the event loop that data is ready to send
     modify_epoll_events(conn->fd, EPOLLIN | EPOLLOUT);
+}
+
+void process_message(std::shared_ptr<Connection> conn, uint16_t msg_type, std::vector<uint8_t> payload) {
+    total_requests_processed++;
+    std::string payload_str(payload.begin(), payload.end());
+
+    if (msg_type == MSG_CHAT) {
+        // Broadcast to ALL connected clients
+        std::string broadcast_msg = "[Client " + std::to_string(conn->fd) + "]: " + payload_str;
+        cout << broadcast_msg << "\n";
+
+        std::lock_guard<std::mutex> lock(connections_mtx);
+        for (auto& pair : connections) {
+            send_packet_to_client(pair.second, MSG_CHAT, broadcast_msg);
+        }
+    } 
+    else if (msg_type == MSG_STATS) {
+        auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - server_start_time).count();
+        
+        std::string stats = "=== Server Metrics ===\n"
+                            "Uptime: " + std::to_string(uptime) + "s\n"
+                            "Active Clients: " + std::to_string(connections.size()) + "\n"
+                            "Total Requests: " + std::to_string(total_requests_processed) + "\n"
+                            "Thread Pool Queue: " + std::to_string(pool.queue_size());
+        
+        send_packet_to_client(conn, MSG_STATS, stats);
+    } 
+    else if (msg_type == MSG_PING) {
+        send_packet_to_client(conn, MSG_PING, "PONG");
+    }
 }
 
 void handle_read(std::shared_ptr<Connection> conn) {
@@ -43,25 +72,24 @@ void handle_read(std::shared_ptr<Connection> conn) {
         if (n > 0) {
             conn->read_buf.insert(conn->read_buf.end(), temp_buf, temp_buf + n);
         } else if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            break; // Finished reading all available data
+            break; 
         } else {
-            // Connection closed or error
+            std::lock_guard<std::mutex> lock(connections_mtx);
             Close(conn->fd);
             connections.erase(conn->fd);
+            cout << "Client disconnected: fd " << conn->fd << "\n";
             return;
         }
     }
 
-    // Protocol Framing: Extract messages
     while (conn->read_buf.size() >= sizeof(MessageHeader)) {
         MessageHeader hdr;
         memcpy(&hdr, conn->read_buf.data(), sizeof(MessageHeader));
 
         if (conn->read_buf.size() >= sizeof(MessageHeader) + hdr.payload_length) {
-            // Full message received
             if (!conn->rate_limiter.consume()) {
-                cout << "Rate limit exceeded for fd " << conn->fd << ". Dropping request.\n";
-                // Advance buffer to drop it
+                cout << "\033[33m[Rate Limit] Dropped request from fd " << conn->fd << "\033[0m\n";
+                send_packet_to_client(conn, MSG_CHAT, "[Server] Rate limit exceeded. Slow down.");
                 conn->read_buf.erase(conn->read_buf.begin(), conn->read_buf.begin() + sizeof(MessageHeader) + hdr.payload_length);
                 continue;
             }
@@ -71,15 +99,13 @@ void handle_read(std::shared_ptr<Connection> conn) {
                 conn->read_buf.begin() + sizeof(MessageHeader) + hdr.payload_length
             );
 
-            // Remove framed message from buffer
             conn->read_buf.erase(conn->read_buf.begin(), conn->read_buf.begin() + sizeof(MessageHeader) + hdr.payload_length);
 
-            // Offload to Thread Pool
-            pool.enqueue([conn, payload]() {
-                process_message(conn, payload);
+            pool.enqueue([conn, type = hdr.msg_type, payload]() {
+                process_message(conn, type, payload);
             });
         } else {
-            break; // Wait for more data
+            break; 
         }
     }
 }
@@ -95,7 +121,7 @@ void handle_write(std::shared_ptr<Connection> conn) {
     if (n > 0) {
         conn->write_buf.erase(conn->write_buf.begin(), conn->write_buf.begin() + n);
         if (conn->write_buf.empty()) {
-            modify_epoll_events(conn->fd, EPOLLIN); // Revert to only reading
+            modify_epoll_events(conn->fd, EPOLLIN);
         }
     }
 }
@@ -104,6 +130,8 @@ int main(int argc, char **argv) {
     if (argc != 2) cerr << "Usage: server <PORT>\n", exit(0);
 
     int listenfd = Socket(AF_INET, SOCK_STREAM, 0);
+    int opt = 1;
+    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     SetNonBlocking(listenfd);
 
     struct sockaddr_in servaddr{};
@@ -120,7 +148,7 @@ int main(int argc, char **argv) {
     ev.data.fd = listenfd;
     epoll_ctl(epollfd, EPOLL_CTL_ADD, listenfd, &ev);
 
-    cout << "Server listening on port " << argv[1] << "...\n";
+    cout << "\033[32m[Server] Listening on port " << argv[1] << "...\033[0m\n";
 
     for (;;) {
         int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
@@ -128,34 +156,42 @@ int main(int argc, char **argv) {
             int current_fd = events[i].data.fd;
 
             if (current_fd == listenfd) {
-                // Handle new connections
                 while (true) {
                     struct sockaddr_in cliaddr{};
                     socklen_t clilen = sizeof(cliaddr);
                     int connfd = Accept(listenfd, (struct sockaddr *)&cliaddr, &clilen);
-                    if (connfd < 0) break; // EAGAIN
+                    if (connfd < 0) break; 
 
                     SetNonBlocking(connfd);
                     ev.events = EPOLLIN | EPOLLET;
                     ev.data.fd = connfd;
                     epoll_ctl(epollfd, EPOLL_CTL_ADD, connfd, &ev);
                     
-                    connections[connfd] = std::make_shared<Connection>(connfd);
-                    cout << "New client connected: fd " << connfd << "\n";
+                    {
+                        std::lock_guard<std::mutex> lock(connections_mtx);
+                        connections[connfd] = std::make_shared<Connection>(connfd);
+                    }
+                    cout << "\033[36m[Connection] New client connected: fd " << connfd << "\033[0m\n";
                 }
             } else if (events[i].events & EPOLLIN) {
-                if (connections.count(current_fd)) {
-                    handle_read(connections[current_fd]);
+                std::shared_ptr<Connection> c;
+                {
+                    std::lock_guard<std::mutex> lock(connections_mtx);
+                    if (connections.count(current_fd)) c = connections[current_fd];
                 }
+                if (c) handle_read(c);
             } else if (events[i].events & EPOLLOUT) {
-                if (connections.count(current_fd)) {
-                    handle_write(connections[current_fd]);
+                std::shared_ptr<Connection> c;
+                {
+                    std::lock_guard<std::mutex> lock(connections_mtx);
+                    if (connections.count(current_fd)) c = connections[current_fd];
                 }
+                if (c) handle_write(c);
             } else if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-                // Connection Lifecycle: Cleanup
-                cout << "Client disconnected: fd " << current_fd << "\n";
+                std::lock_guard<std::mutex> lock(connections_mtx);
                 Close(current_fd);
                 connections.erase(current_fd);
+                cout << "\033[31m[Disconnection] Client disconnected: fd " << current_fd << "\033[0m\n";
             }
         }
     }

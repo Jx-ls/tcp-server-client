@@ -9,38 +9,43 @@
 #include <functional>
 #include <chrono>
 #include <memory>
+#include <unordered_map>
 
-using namespace std;
+// --- Custom Binary Protocol ---
+enum MessageType {
+    MSG_CHAT = 1,
+    MSG_STATS = 2,
+    MSG_PING = 3
+};
 
-// Custom Binary Protocol
 #pragma pack(push, 1)
 struct MessageHeader {
     uint32_t payload_length;
-    uint16_t msg_type; // e.g., 1 = Request, 2 = Response
+    uint16_t msg_type; 
 };
 #pragma pack(pop)
 
-// Token Bucket Rate Limiter 
+// --- Token Bucket Rate Limiter ---
 class RateLimiter {
     int capacity;
     int tokens;
     int refill_rate_per_sec;
-    chrono::steady_clock::time_point last_refill;
-    mutex mtx;
+    std::chrono::steady_clock::time_point last_refill;
+    std::mutex mtx;
 
 public:
     RateLimiter(int cap, int rate) : capacity(cap), tokens(cap), refill_rate_per_sec(rate) {
-        last_refill = chrono::steady_clock::now();
+        last_refill = std::chrono::steady_clock::now();
     }
 
     bool consume(int count = 1) {
-        lock_guard<mutex> lock(mtx);
-        auto now = chrono::steady_clock::now();
-        chrono::duration<double> elapsed = now - last_refill;
+        std::lock_guard<std::mutex> lock(mtx);
+        auto now = std::chrono::steady_clock::now();
+        std::chrono::duration<double> elapsed = now - last_refill;
         
         int new_tokens = elapsed.count() * refill_rate_per_sec;
         if (new_tokens > 0) {
-            tokens = min(capacity, tokens + new_tokens);
+            tokens = std::min(capacity, tokens + new_tokens);
             last_refill = now;
         }
 
@@ -52,12 +57,12 @@ public:
     }
 };
 
-// Thread Pool 
+// --- Thread Pool ---
 class ThreadPool {
-    vector<thread> workers;
-    queue<function<void()>> tasks;
-    mutex queue_mutex;
-    condition_variable condition;
+    std::vector<std::thread> workers;
+    std::queue<std::function<void()>> tasks;
+    std::mutex queue_mutex;
+    std::condition_variable condition;
     bool stop;
 
 public:
@@ -65,9 +70,9 @@ public:
         for(size_t i = 0; i < threads; ++i)
             workers.emplace_back([this] {
                 for(;;) {
-                    function<void()> task;
+                    std::function<void()> task;
                     {
-                        unique_lock<mutex> lock(this->queue_mutex);
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
                         this->condition.wait(lock, [this]{ return this->stop || !this->tasks.empty(); });
                         if(this->stop && this->tasks.empty()) return;
                         task = std::move(this->tasks.front());
@@ -78,33 +83,38 @@ public:
             });
     }
 
-    void enqueue(function<void()> task) {
+    void enqueue(std::function<void()> task) {
         {
-            unique_lock<mutex> lock(queue_mutex);
+            std::unique_lock<std::mutex> lock(queue_mutex);
             tasks.push(std::move(task));
         }
         condition.notify_one();
     }
 
+    size_t queue_size() {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        return tasks.size();
+    }
+
     ~ThreadPool() {
         {
-            unique_lock<mutex> lock(queue_mutex);
+            std::unique_lock<std::mutex> lock(queue_mutex);
             stop = true;
         }
         condition.notify_all();
-        for(thread &worker: workers) worker.join();
+        for(std::thread &worker: workers) worker.join();
     }
 };
 
-// Connection Context 
+// --- Connection Context ---
 struct Connection {
     int fd;
-    vector<uint8_t> read_buf;
-    vector<uint8_t> write_buf;
-    mutex write_mtx;
+    std::vector<uint8_t> read_buf;
+    std::vector<uint8_t> write_buf;
+    std::mutex write_mtx;
     RateLimiter rate_limiter;
 
-    Connection(int fd) : fd(fd), rate_limiter(10, 5) {} // Max 10 burst, 5 req/sec
+    Connection(int fd) : fd(fd), rate_limiter(20, 10) {} // 20 burst, 10 req/sec limit
 };
 
 #endif

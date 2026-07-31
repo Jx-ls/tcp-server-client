@@ -1,17 +1,59 @@
 #include "../include/utils.h"
 #include "../include/server_core.h"
 #include <string>
+#include <thread>
+#include <atomic>
 
-void send_message(int sockfd, const std::string& payload) {
+std::atomic<bool> running{true};
+
+void send_packet(int sockfd, uint16_t msg_type, const std::string& payload) {
     MessageHeader hdr;
     hdr.payload_length = payload.size();
-    hdr.msg_type = 1;
+    hdr.msg_type = msg_type;
 
     std::vector<uint8_t> buffer(sizeof(MessageHeader) + payload.size());
     memcpy(buffer.data(), &hdr, sizeof(MessageHeader));
     memcpy(buffer.data() + sizeof(MessageHeader), payload.data(), payload.size());
 
     Write(sockfd, buffer.data(), buffer.size());
+}
+
+void receive_loop(int sockfd) {
+    std::vector<uint8_t> buffer;
+    char temp[4096];
+
+    while (running) {
+        ssize_t n = read(sockfd, temp, sizeof(temp));
+        if (n > 0) {
+            buffer.insert(buffer.end(), temp, temp + n);
+
+            while (buffer.size() >= sizeof(MessageHeader)) {
+                MessageHeader hdr;
+                memcpy(&hdr, buffer.data(), sizeof(MessageHeader));
+
+                if (buffer.size() >= sizeof(MessageHeader) + hdr.payload_length) {
+                    std::string payload(
+                        buffer.begin() + sizeof(MessageHeader), 
+                        buffer.begin() + sizeof(MessageHeader) + hdr.payload_length
+                    );
+                    buffer.erase(buffer.begin(), buffer.begin() + sizeof(MessageHeader) + hdr.payload_length);
+
+                    // Clear current line, print incoming broadcast/response cleanly, and restore prompt
+                    cout << "\r\33[2K" << payload << "\n> " << flush;
+                } else {
+                    break;
+                }
+            }
+        } else if (n == 0) {
+            cout << "\nServer closed the connection.\n";
+            running = false;
+            break;
+        } else {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                break;
+            }
+        }
+    }
 }
 
 int main(int argc, char **argv) {
@@ -27,30 +69,33 @@ int main(int argc, char **argv) {
         cerr << "Invalid IP: " << strerror(errno) << "\n", exit(EXIT_FAILURE);
 
     Connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr));
-    cout << "Connected to server. Sending requests...\n";
+    SetNonBlocking(sockfd);
+    cout << "Connected to server successfully!\nType messages or '/ping' to test latency.\n";
 
-    // Send 15 messages quickly to trigger the rate limiter (burst is 10)
-    for (int i = 0; i < 15; i++) {
-        send_message(sockfd, "Hello Server, message #" + to_string(i));
-    }
+    std::thread listener(receive_loop, sockfd);
+    listener.detach();
 
-    // Read responses
-    char recvline[4096];
-    while (true) {
-        ssize_t n = read(sockfd, recvline, sizeof(recvline));
-        if (n > 0) {
-            // Simplified parsing: Assume we read the header and payload together for the demo
-            if (n >= sizeof(MessageHeader)) {
-                MessageHeader* hdr = (MessageHeader*)recvline;
-                std::string payload(recvline + sizeof(MessageHeader), hdr->payload_length);
-                cout << "Received: " << payload << "\n";
-            }
-        } else if (n == 0) {
-            cout << "Server closed connection.\n";
-            break;
+    cout << "> " << flush;
+
+    string msg;
+    while (running && getline(cin, msg)) {
+        if (msg.empty()) {
+            cout << "> " << flush;
+            continue;
         }
+
+        // Clear the user's typed line instantly to let the server's broadcast take over cleanly
+        cout << "\33[A\33[2K\r" << flush;
+
+        if (msg == "/ping") {
+            send_packet(sockfd, MSG_PING, "ping");
+        } else {
+            send_packet(sockfd, MSG_CHAT, msg);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    
+
     Close(sockfd);
     return 0;
 }

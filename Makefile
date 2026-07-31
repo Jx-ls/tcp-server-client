@@ -1,5 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++20 -Wall -Wextra -Iinclude
+LDFLAGS = -lpthread
 
 BUILD = build
 BIN = bin
@@ -14,10 +15,10 @@ $(BIN):
 	mkdir -p $(BIN)
 
 $(BIN)/server: $(BUILD)/server.o $(BUILD)/utils.o
-	$(CXX) $^ -o $@
+	$(CXX) $^ -o $@ $(LDFLAGS)
 
 $(BIN)/client: $(BUILD)/client.o $(BUILD)/utils.o
-	$(CXX) $^ -o $@
+	$(CXX) $^ -o $@ $(LDFLAGS)
 
 $(BUILD)/%.o: src/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
